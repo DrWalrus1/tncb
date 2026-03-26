@@ -12,6 +12,7 @@ import (
 
 // TVRecord holds metadata for one TV episode extracted from a Blu-ray disc.
 type TVRecord struct {
+	DiscName       string `bson:"disc_name"`
 	SeasonNumber   int    `bson:"season_number"`
 	EpisodeNumber  int    `bson:"episode_number"`
 	PlaylistID     string `bson:"playlist_id"`
@@ -26,6 +27,7 @@ type TVRecord struct {
 
 // MovieRecord holds metadata for a movie extracted from a Blu-ray disc.
 type MovieRecord struct {
+	DiscName       string `bson:"disc_name"`
 	PlaylistID     string `bson:"playlist_id"`
 	ClipID         string `bson:"clip_id"`
 	Duration       int    `bson:"duration_s"`
@@ -50,7 +52,8 @@ type Processor struct {
 
 // ProcessDisc scans the current disc and returns enriched metadata along with
 // the BDMV root path (needed for ejection).
-func (p *Processor) ProcessDisc() (*DiscResult, string, error) {
+// forceIsMovie overrides auto-detection when non-nil.
+func (p *Processor) ProcessDisc(forceIsMovie *bool) (*DiscResult, string, error) {
 	bdmvRoot, err := disc.SelectBDMV(p.bdmvPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("detecting disc: %w", err)
@@ -61,7 +64,11 @@ func (p *Processor) ProcessDisc() (*DiscResult, string, error) {
 	if err != nil {
 		return nil, bdmvRoot, fmt.Errorf("opening disc: %w", err)
 	}
-	fmt.Printf("Disc: %q  (season %d, disc %d)\n", d.Info.ShowName, d.Info.Season, d.Info.Disc)
+	discName, err := disc.ParseDiscTitle(bdmvRoot)
+	if err != nil || discName == "" {
+		discName = d.Info.ShowName
+	}
+	fmt.Printf("Disc: %q  (season %d, disc %d)\n", discName, d.Info.Season, d.Info.Disc)
 
 	minDur, maxDur, clusterDur := disc.InferEpisodeBounds(bdmvRoot)
 	playlists, err := disc.LoadEpisodePlaylists(bdmvRoot, minDur, maxDur, clusterDur)
@@ -76,24 +83,24 @@ func (p *Processor) ProcessDisc() (*DiscResult, string, error) {
 	d.Info.DetectMovie(len(playlists))
 	client := tmdb.New(p.tmdbKey)
 
-	// Attempt a quick TMDB lookup to verify the auto-detected type.
-	// If nothing is found, ask the user to confirm movie vs TV.
+	// Use forced type if provided; otherwise auto-detect via TMDB.
 	isMovie := d.Info.IsMovie
-	tmdbHit := p.quickTMDBCheck(d.Info.ShowName, isMovie, client)
-	if !tmdbHit {
+	if forceIsMovie != nil {
+		isMovie = *forceIsMovie
+	} else if !p.quickTMDBCheck(d.Info.ShowName, isMovie, client) {
 		isMovie = p.promptConfirmType(d.Info.ShowName, isMovie)
-		d.Info.IsMovie = isMovie
 	}
+	d.Info.IsMovie = isMovie
 
 	result := &DiscResult{IsMovie: isMovie}
 	if isMovie {
-		rec, err := p.processMovie(d.Info, playlists, client, bdmvRoot)
+		rec, err := p.processMovie(d.Info, playlists, client, bdmvRoot, discName)
 		if err != nil {
 			return nil, bdmvRoot, err
 		}
 		result.Movie = rec
 	} else {
-		eps, err := p.processTV(d.Info, playlists, client, bdmvRoot)
+		eps, err := p.processTV(d.Info, playlists, client, bdmvRoot, discName)
 		if err != nil {
 			return nil, bdmvRoot, err
 		}
@@ -126,7 +133,7 @@ func (p *Processor) promptConfirmType(name string, detectedMovie bool) bool {
 }
 
 // processTV resolves TV episode metadata and builds records for each playlist.
-func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, client *tmdb.Client, bdmvRoot string) ([]TVRecord, error) {
+func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, client *tmdb.Client, bdmvRoot, discName string) ([]TVRecord, error) {
 	seriesID, seriesName, tmdbEps := p.lookupTV(info, len(playlists), client)
 
 	// Pad with empty entries so we always have one per playlist slot.
@@ -138,6 +145,7 @@ func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, cl
 	for i, pl := range playlists {
 		ep := tmdbEps[i]
 		records = append(records, TVRecord{
+			DiscName:       discName,
 			SeasonNumber:   info.Season,
 			EpisodeNumber:  ep.EpisodeNumber,
 			PlaylistID:     pl.Name,
@@ -220,9 +228,10 @@ func (p *Processor) promptTVManual(info disc.DiscInfo, numEps int, client *tmdb.
 }
 
 // processMovie resolves movie metadata and builds the record.
-func (p *Processor) processMovie(info disc.DiscInfo, playlists []*bdmv.Playlist, client *tmdb.Client, bdmvRoot string) (*MovieRecord, error) {
+func (p *Processor) processMovie(info disc.DiscInfo, playlists []*bdmv.Playlist, client *tmdb.Client, bdmvRoot, discName string) (*MovieRecord, error) {
 	pl := playlists[0]
 	rec := &MovieRecord{
+		DiscName:       discName,
 		PlaylistID:     pl.Name,
 		ClipID:         pl.PrimaryClip(),
 		Duration:       pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate),

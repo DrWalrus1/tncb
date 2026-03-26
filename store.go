@@ -23,11 +23,13 @@ func NewStore(db *sql.DB, csvDir string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// migrate creates the tv_episodes and movies tables if they don't exist.
+// migrate creates the tv_episodes and movies tables if they don't exist,
+// and adds disc_name to existing databases that predate the column.
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS tv_episodes (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			disc_name       TEXT    NOT NULL DEFAULT '',
 			season_number   INTEGER NOT NULL,
 			episode_number  INTEGER NOT NULL,
 			playlist_id     TEXT    NOT NULL,
@@ -41,6 +43,7 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE TABLE IF NOT EXISTS movies (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			disc_name       TEXT    NOT NULL DEFAULT '',
 			playlist_id     TEXT    NOT NULL,
 			clip_id         TEXT    NOT NULL,
 			duration        INTEGER NOT NULL,
@@ -90,7 +93,7 @@ func (s *Store) writeTVCSV(episodes []TVRecord) error {
 	w := csv.NewWriter(f)
 	if isNew {
 		if err := w.Write([]string{
-			"Season Number", "Episode Number", "Playlist ID", "Clip ID",
+			"Disc Name", "Season Number", "Episode Number", "Playlist ID", "Clip ID",
 			"Duration", "Episode ID", "Series Name", "Series ID",
 			"Extracted Episode Title", "Actual Title",
 		}); err != nil {
@@ -99,6 +102,7 @@ func (s *Store) writeTVCSV(episodes []TVRecord) error {
 	}
 	for _, ep := range episodes {
 		if err := w.Write([]string{
+			ep.DiscName,
 			strconv.Itoa(ep.SeasonNumber),
 			strconv.Itoa(ep.EpisodeNumber),
 			ep.PlaylistID,
@@ -129,13 +133,14 @@ func (s *Store) writeMovieCSV(m *MovieRecord) error {
 	w := csv.NewWriter(f)
 	if isNew {
 		if err := w.Write([]string{
-			"Playlist ID", "Clip ID", "Duration", "Movie ID",
+			"Disc Name", "Playlist ID", "Clip ID", "Duration", "Movie ID",
 			"Extracted Title", "Actual Title",
 		}); err != nil {
 			return err
 		}
 	}
 	if err := w.Write([]string{
+		m.DiscName,
 		m.PlaylistID,
 		m.ClipID,
 		strconv.Itoa(m.Duration),
@@ -159,9 +164,9 @@ func (s *Store) insertEpisodes(episodes []TVRecord) error {
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO tv_episodes
-			(season_number, episode_number, playlist_id, clip_id, duration,
+			(disc_name, season_number, episode_number, playlist_id, clip_id, duration,
 			 episode_id, series_name, series_id, extracted_title, actual_title)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -170,7 +175,7 @@ func (s *Store) insertEpisodes(episodes []TVRecord) error {
 
 	for _, ep := range episodes {
 		if _, err := stmt.Exec(
-			ep.SeasonNumber, ep.EpisodeNumber, ep.PlaylistID, ep.ClipID, ep.Duration,
+			ep.DiscName, ep.SeasonNumber, ep.EpisodeNumber, ep.PlaylistID, ep.ClipID, ep.Duration,
 			ep.EpisodeID, ep.SeriesName, ep.SeriesID, ep.ExtractedTitle, ep.ActualTitle,
 		); err != nil {
 			return err
@@ -182,9 +187,9 @@ func (s *Store) insertEpisodes(episodes []TVRecord) error {
 // insertMovie inserts a movie record into the movies table.
 func (s *Store) insertMovie(m *MovieRecord) error {
 	_, err := s.db.Exec(`
-		INSERT INTO movies (playlist_id, clip_id, duration, movie_id, extracted_title, actual_title)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, m.PlaylistID, m.ClipID, m.Duration, m.MovieID, m.ExtractedTitle, m.ActualTitle)
+		INSERT INTO movies (disc_name, playlist_id, clip_id, duration, movie_id, extracted_title, actual_title)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, m.DiscName, m.PlaylistID, m.ClipID, m.Duration, m.MovieID, m.ExtractedTitle, m.ActualTitle)
 	return err
 }
 

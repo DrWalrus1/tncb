@@ -58,32 +58,51 @@ func main() {
 		stdin:    stdin,
 	}
 
-	for discNum := 1; ; discNum++ {
-		fmt.Printf("\n=== Disc %d ===\n", discNum)
+	discNum := 1
+	for {
+		fmt.Printf("\n[m] Scan as movie  [t] Scan as TV  [Enter] Auto-detect  [p] Print database  [q] Quit\n> ")
+		line, _ := stdin.ReadString('\n')
+		choice := strings.TrimSpace(strings.ToLower(line))
 
-		result, bdmvRoot, err := proc.ProcessDisc()
+		switch choice {
+		case "q", "quit":
+			fmt.Println("\nSession complete.")
+			fmt.Printf("  TV CSV:    %s\n", store.tvCSVPath)
+			fmt.Printf("  Movie CSV: %s\n", store.movieCSVPath)
+			fmt.Printf("  Database:  %s\n", *dbPath)
+			return
+
+		case "p", "print":
+			if err := printDatabase(sqlDB); err != nil {
+				fmt.Fprintf(os.Stderr, "Print error: %v\n", err)
+			}
+			continue
+		}
+
+		// Determine forced type for m/t, nil for auto.
+		var forceIsMovie *bool
+		if choice == "m" || choice == "movie" {
+			v := true
+			forceIsMovie = &v
+		} else if choice == "t" || choice == "tv" {
+			v := false
+			forceIsMovie = &v
+		}
+
+		fmt.Printf("\n=== Disc %d ===\n", discNum)
+		result, bdmvRoot, err := proc.ProcessDisc(forceIsMovie)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			continue
+		}
+		if err := store.Write(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Write error: %v\n", err)
+		}
+		if err := ejectDisc(bdmvRoot); err != nil {
+			fmt.Printf("Note: auto-eject failed: %v\n", err)
 		} else {
-			if err := store.Write(result); err != nil {
-				fmt.Fprintf(os.Stderr, "Write error: %v\n", err)
-			}
-			if err := ejectDisc(bdmvRoot); err != nil {
-				fmt.Printf("Note: auto-eject failed: %v\n", err)
-			} else {
-				fmt.Println("Disc ejected.")
-			}
+			fmt.Println("Disc ejected.")
 		}
-
-		fmt.Print("\nInsert next disc and press Enter to continue (or 'q' to quit): ")
-		line, _ := stdin.ReadString('\n')
-		if strings.TrimSpace(strings.ToLower(line)) == "q" {
-			break
-		}
+		discNum++
 	}
-
-	fmt.Println("\nSession complete.")
-	fmt.Printf("  TV CSV:    %s\n", store.tvCSVPath)
-	fmt.Printf("  Movie CSV: %s\n", store.movieCSVPath)
-	fmt.Printf("  Database:  %s\n", *dbPath)
 }

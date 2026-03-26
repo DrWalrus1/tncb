@@ -21,7 +21,7 @@ func printTVEpisodes(db *sql.DB) error {
 	rows, err := db.Query(`
 		SELECT series_name, series_id, season_number, episode_number,
 		       episode_id, playlist_id, clip_id, duration,
-		       extracted_title, actual_title
+		       extracted_title, actual_title, disc_name
 		FROM tv_episodes
 		ORDER BY series_name, season_number, episode_number
 	`)
@@ -31,8 +31,8 @@ func printTVEpisodes(db *sql.DB) error {
 	defer rows.Close()
 
 	type row struct {
-		seriesName, playlistID, clipID, extractedTitle, actualTitle string
-		seriesID, season, episode, episodeID, duration              int
+		seriesName, playlistID, clipID, extractedTitle, actualTitle, discName string
+		seriesID, season, episode, episodeID, duration                        int
 	}
 
 	var records []row
@@ -41,7 +41,7 @@ func printTVEpisodes(db *sql.DB) error {
 		if err := rows.Scan(
 			&r.seriesName, &r.seriesID, &r.season, &r.episode,
 			&r.episodeID, &r.playlistID, &r.clipID, &r.duration,
-			&r.extractedTitle, &r.actualTitle,
+			&r.extractedTitle, &r.actualTitle, &r.discName,
 		); err != nil {
 			return err
 		}
@@ -81,9 +81,13 @@ func printTVEpisodes(db *sql.DB) error {
 		if r.episodeID > 0 {
 			epID = fmt.Sprintf(" [ep %d]", r.episodeID)
 		}
-		fmt.Printf("      E%02d  %-45s  playlist=%-8s clip=%-8s  %s%s\n",
+		discLabel := ""
+		if r.discName != "" {
+			discLabel = fmt.Sprintf(" [disc: %s]", r.discName)
+		}
+		fmt.Printf("      E%02d  %-45s  playlist=%-8s clip=%-8s  %s%s%s\n",
 			r.episode, truncate(title, 45), r.playlistID, r.clipID,
-			formatDuration(r.duration), epID)
+			formatDuration(r.duration), epID, discLabel)
 	}
 	fmt.Printf("\n  Total: %d episode(s)\n", len(records))
 	return nil
@@ -91,7 +95,7 @@ func printTVEpisodes(db *sql.DB) error {
 
 func printMovies(db *sql.DB) error {
 	rows, err := db.Query(`
-		SELECT playlist_id, clip_id, duration, movie_id, extracted_title, actual_title
+		SELECT playlist_id, clip_id, duration, movie_id, extracted_title, actual_title, disc_name
 		FROM movies
 		ORDER BY actual_title
 	`)
@@ -101,8 +105,8 @@ func printMovies(db *sql.DB) error {
 	defer rows.Close()
 
 	type row struct {
-		playlistID, clipID, extractedTitle, actualTitle string
-		movieID, duration                               int
+		playlistID, clipID, extractedTitle, actualTitle, discName string
+		movieID, duration                                         int
 	}
 
 	var records []row
@@ -110,7 +114,7 @@ func printMovies(db *sql.DB) error {
 		var r row
 		if err := rows.Scan(
 			&r.playlistID, &r.clipID, &r.duration,
-			&r.movieID, &r.extractedTitle, &r.actualTitle,
+			&r.movieID, &r.extractedTitle, &r.actualTitle, &r.discName,
 		); err != nil {
 			return err
 		}
@@ -135,9 +139,13 @@ func printMovies(db *sql.DB) error {
 		if r.movieID > 0 {
 			tmdbID = fmt.Sprintf(" [TMDB %d]", r.movieID)
 		}
-		fmt.Printf("  %-50s  playlist=%-8s clip=%-8s  %s%s\n",
+		discLabel := ""
+		if r.discName != "" {
+			discLabel = fmt.Sprintf(" [disc: %s]", r.discName)
+		}
+		fmt.Printf("  %-50s  playlist=%-8s clip=%-8s  %s%s%s\n",
 			truncate(title, 50), r.playlistID, r.clipID,
-			formatDuration(r.duration), tmdbID)
+			formatDuration(r.duration), tmdbID, discLabel)
 	}
 	fmt.Printf("\n  Total: %d movie(s)\n", len(records))
 	return nil

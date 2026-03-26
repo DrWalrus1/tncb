@@ -92,6 +92,7 @@ Prints all stored TV episodes (grouped by series and season) and movies, then ex
 
 | Column | Type | Description |
 |--------|------|-------------|
+| `disc_name` | TEXT | Raw disc title as read from the disc label |
 | `season_number` | INTEGER | Season number parsed from disc |
 | `episode_number` | INTEGER | Episode number from TMDB or manual entry |
 | `playlist_id` | TEXT | BDMV playlist filename (e.g. `00800`) |
@@ -107,6 +108,7 @@ Prints all stored TV episodes (grouped by series and season) and movies, then ex
 
 | Column | Type | Description |
 |--------|------|-------------|
+| `disc_name` | TEXT | Raw disc title as read from the disc label |
 | `playlist_id` | TEXT | BDMV playlist filename |
 | `clip_id` | TEXT | Primary `.m2ts` clip name |
 | `duration` | INTEGER | Estimated duration in seconds |
