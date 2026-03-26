@@ -22,11 +22,8 @@ func main() {
 	dbPath := flag.String("db", "tncb.db", "SQLite database file path")
 	csvDir := flag.String("csv-dir", ".", "Directory to write CSV output files")
 	bdmvPath := flag.String("bdmv", "", "Explicit BDMV root path (auto-detects if empty)")
+	listFlag := flag.Bool("list", false, "Print all stored records and exit")
 	flag.Parse()
-
-	if *tmdbKey == "" {
-		log.Fatal("TMDB API key required: set TMDB_API_KEY in .env or use --tmdb-key")
-	}
 
 	sqlDB, err := sql.Open("sqlite", *dbPath)
 	if err != nil {
@@ -37,6 +34,17 @@ func main() {
 	store, err := NewStore(sqlDB, *csvDir)
 	if err != nil {
 		log.Fatalf("Store init: %v", err)
+	}
+
+	if *listFlag {
+		if err := printDatabase(sqlDB); err != nil {
+			log.Fatalf("List: %v", err)
+		}
+		return
+	}
+
+	if *tmdbKey == "" {
+		log.Fatal("TMDB API key required: set TMDB_API_KEY in .env or use --tmdb-key")
 	}
 
 	session := time.Now().Format("20060102_150405")
