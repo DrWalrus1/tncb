@@ -193,6 +193,17 @@ func (s *Store) insertMovie(m *MovieRecord) error {
 	return err
 }
 
+// CountEpisodesBySeason returns the number of episodes already stored for the
+// given TMDB series ID and season number.
+func (s *Store) CountEpisodesBySeason(seriesID, season int) int {
+	var count int
+	s.db.QueryRow(
+		`SELECT COUNT(*) FROM tv_episodes WHERE series_id = ? AND season_number = ?`,
+		seriesID, season,
+	).Scan(&count)
+	return count
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

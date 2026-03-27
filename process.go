@@ -48,6 +48,7 @@ type Processor struct {
 	tmdbKey  string
 	bdmvPath string
 	stdin    *bufio.Reader
+	store    *Store
 }
 
 // ProcessDisc scans the current disc and returns enriched metadata along with
@@ -112,10 +113,10 @@ func (p *Processor) ProcessDisc(forceIsMovie *bool) (*DiscResult, string, error)
 // quickTMDBCheck returns true if TMDB has any results for the title+type.
 func (p *Processor) quickTMDBCheck(name string, isMovie bool, client *tmdb.Client) bool {
 	if isMovie {
-		movies, err := client.SearchMovie(name)
+		movies, _, err := client.SmartSearchMovie(name)
 		return err == nil && len(movies) > 0
 	}
-	shows, err := client.SearchTV(name)
+	shows, _, err := client.SmartSearchTV(name)
 	return err == nil && len(shows) > 0
 }
 
@@ -134,7 +135,17 @@ func (p *Processor) promptConfirmType(name string, detectedMovie bool) bool {
 
 // processTV resolves TV episode metadata and builds records for each playlist.
 func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, client *tmdb.Client, bdmvRoot, discName string) ([]TVRecord, error) {
-	seriesID, seriesName, tmdbEps := p.lookupTV(info, len(playlists), client)
+	var filtered []*bdmv.Playlist
+	for _, pl := range playlists {
+		if pl.Note == "commentary" {
+			fmt.Printf("Warning: skipping commentary playlist %s (overlays clip %s)\n", pl.Name, pl.NoteClip)
+			continue
+		}
+		filtered = append(filtered, pl)
+	}
+	playlists = filtered
+
+	seriesID, seriesName, tmdbEps, seasonNum := p.lookupTV(info, len(playlists), client, discName)
 
 	// Pad with empty entries so we always have one per playlist slot.
 	for i := len(tmdbEps); i < len(playlists); i++ {
@@ -146,7 +157,7 @@ func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, cl
 		ep := tmdbEps[i]
 		records = append(records, TVRecord{
 			DiscName:       discName,
-			SeasonNumber:   info.Season,
+			SeasonNumber:   seasonNum,
 			EpisodeNumber:  ep.EpisodeNumber,
 			PlaylistID:     pl.Name,
 			ClipID:         pl.PrimaryClip(),
@@ -154,7 +165,7 @@ func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, cl
 			EpisodeID:      ep.ID,
 			SeriesName:     seriesName,
 			SeriesID:       seriesID,
-			ExtractedTitle: fmt.Sprintf("%s S%02dE%02d", seriesName, info.Season, ep.EpisodeNumber),
+			ExtractedTitle: fmt.Sprintf("%s S%02dE%02d", seriesName, seasonNum, ep.EpisodeNumber),
 			ActualTitle:    ep.Name,
 		})
 	}
@@ -162,42 +173,62 @@ func (p *Processor) processTV(info disc.DiscInfo, playlists []*bdmv.Playlist, cl
 }
 
 // lookupTV searches TMDB for the series and fetches the right episode slice.
-// Returns (seriesID, seriesName, episodes).
-func (p *Processor) lookupTV(info disc.DiscInfo, wantCount int, client *tmdb.Client) (int, string, []tmdb.Episode) {
-	shows, err := client.SearchTV(info.ShowName)
+// Returns (seriesID, seriesName, episodes, seasonNumber).
+func (p *Processor) lookupTV(info disc.DiscInfo, wantCount int, client *tmdb.Client, discName string) (int, string, []tmdb.Episode, int) {
+	shows, matchedQuery, err := client.SmartSearchTV(info.ShowName)
 	if err == nil && len(shows) > 0 {
 		show := shows[0]
-		fmt.Printf("TMDB match: %q (ID %d)\n", show.Name, show.ID)
-		eps := p.fetchSeasonEpisodes(client, show.ID, info, wantCount)
-		return show.ID, show.Name, eps
+		if matchedQuery != info.ShowName {
+			fmt.Printf("TMDB match: %q (ID %d) [searched: %q]\n", show.Name, show.ID, matchedQuery)
+		} else {
+			fmt.Printf("TMDB match: %q (ID %d)\n", show.Name, show.ID)
+		}
+		eps, seasonNum := p.fetchSeasonEpisodes(client, show.ID, info, discName, wantCount)
+		return show.ID, show.Name, eps, seasonNum
 	}
 	// No TMDB hit — manual entry (type was already confirmed in ProcessDisc).
 	return p.promptTVManual(info, wantCount, client)
 }
 
 // fetchSeasonEpisodes retrieves the correct episode slice for this disc.
-func (p *Processor) fetchSeasonEpisodes(client *tmdb.Client, showID int, info disc.DiscInfo, wantCount int) []tmdb.Episode {
-	season, err := client.GetSeason(showID, info.Season)
+// Returns the episodes and the resolved season number.
+func (p *Processor) fetchSeasonEpisodes(client *tmdb.Client, showID int, info disc.DiscInfo, discName string, wantCount int) ([]tmdb.Episode, int) {
+	season, seasonNum, err := client.SmartGetSeason(showID, discName, info.Season)
 	if err != nil {
 		fmt.Printf("Warning: could not fetch season %d: %v\n", info.Season, err)
-		return nil
+		return nil, info.Season
+	}
+	if seasonNum != info.Season {
+		fmt.Printf("Season matched by disc title: season %d\n", seasonNum)
 	}
 	startEp := 0
 	if info.Disc > 1 {
-		fmt.Printf("Disc %d of season %d — first episode number on this disc (1–%d): ",
-			info.Disc, info.Season, len(season.Episodes))
+		dbCount := 0
+		if p.store != nil {
+			dbCount = p.store.CountEpisodesBySeason(showID, seasonNum)
+		}
+		if dbCount > 0 {
+			fmt.Printf("Found %d episode(s) for season %d in database — starting at episode %d.\n",
+				dbCount, seasonNum, dbCount+1)
+			fmt.Printf("Override starting episode number [%d]: ", dbCount+1)
+		} else {
+			fmt.Printf("Disc %d of season %d — first episode number on this disc (1–%d): ",
+				info.Disc, seasonNum, len(season.Episodes))
+		}
 		line, _ := p.stdin.ReadString('\n')
-		n := 0
-		fmt.Sscanf(strings.TrimSpace(line), "%d", &n)
+		n := readInt(line)
 		if n >= 1 {
 			startEp = n
+		} else if dbCount > 0 {
+			startEp = dbCount + 1
 		}
 	}
-	return tmdb.EpisodesForDisc(season, startEp, wantCount)
+	return tmdb.EpisodesForDisc(season, startEp, wantCount), seasonNum
 }
 
 // promptTVManual handles fully manual title entry for an unmatched TV disc.
-func (p *Processor) promptTVManual(info disc.DiscInfo, numEps int, client *tmdb.Client) (int, string, []tmdb.Episode) {
+// Asks for series name, season number, and starting episode before rechecking TMDB.
+func (p *Processor) promptTVManual(info disc.DiscInfo, numEps int, client *tmdb.Client) (int, string, []tmdb.Episode, int) {
 	fmt.Printf("Enter series name [%s]: ", info.ShowName)
 	line, _ := p.stdin.ReadString('\n')
 	name := strings.TrimSpace(line)
@@ -205,26 +236,50 @@ func (p *Processor) promptTVManual(info disc.DiscInfo, numEps int, client *tmdb.
 		name = info.ShowName
 	}
 
-	// Try TMDB once more with the user-supplied name.
-	if shows, err := client.SearchTV(name); err == nil && len(shows) > 0 {
+	fmt.Printf("Season number [%d]: ", info.Season)
+	line, _ = p.stdin.ReadString('\n')
+	season := info.Season
+	if n := readInt(line); n >= 1 {
+		season = n
+	}
+
+	fmt.Print("Starting episode number [1]: ")
+	line, _ = p.stdin.ReadString('\n')
+	startEp := 1
+	if n := readInt(line); n >= 1 {
+		startEp = n
+	}
+
+	// Recheck TMDB with the user-supplied name.
+	if shows, _, err := client.SmartSearchTV(name); err == nil && len(shows) > 0 {
 		show := shows[0]
 		fmt.Printf("Found: %q (ID %d) — use this? [Y/n]: ", show.Name, show.ID)
 		confirm, _ := p.stdin.ReadString('\n')
 		if c := strings.TrimSpace(strings.ToLower(confirm)); c == "" || c == "y" {
-			eps := p.fetchSeasonEpisodes(client, show.ID, info, numEps)
-			return show.ID, show.Name, eps
+			if seasonData, err := client.GetSeason(show.ID, season); err == nil {
+				return show.ID, show.Name, tmdb.EpisodesForDisc(seasonData, startEp, numEps), season
+			}
+			fmt.Printf("Warning: could not fetch season %d from TMDB\n", season)
 		}
 	}
 
 	// Fully manual per-episode title entry.
-	fmt.Printf("Enter titles for %d episode(s):\n", numEps)
+	fmt.Printf("Enter titles for %d episode(s) starting at episode %d:\n", numEps, startEp)
 	eps := make([]tmdb.Episode, 0, numEps)
-	for i := 1; i <= numEps; i++ {
-		fmt.Printf("  Episode %d title: ", i)
+	for i := range numEps {
+		epNum := startEp + i
+		fmt.Printf("  Episode %d title: ", epNum)
 		title, _ := p.stdin.ReadString('\n')
-		eps = append(eps, tmdb.Episode{EpisodeNumber: i, Name: strings.TrimSpace(title)})
+		eps = append(eps, tmdb.Episode{EpisodeNumber: epNum, Name: strings.TrimSpace(title)})
 	}
-	return 0, name, eps
+	return 0, name, eps, season
+}
+
+// readInt parses the first integer from a line of user input, returning 0 if none found.
+func readInt(line string) int {
+	n := 0
+	fmt.Sscanf(strings.TrimSpace(line), "%d", &n)
+	return n
 }
 
 // processMovie resolves movie metadata and builds the record.
@@ -238,9 +293,13 @@ func (p *Processor) processMovie(info disc.DiscInfo, playlists []*bdmv.Playlist,
 		ExtractedTitle: info.ShowName,
 	}
 
-	movies, err := client.SearchMovie(info.ShowName)
+	movies, matchedQuery, err := client.SmartSearchMovie(info.ShowName)
 	if err == nil && len(movies) > 0 {
-		fmt.Printf("TMDB match: %q (ID %d)\n", movies[0].Title, movies[0].ID)
+		if matchedQuery != info.ShowName {
+			fmt.Printf("TMDB match: %q (ID %d) [searched: %q]\n", movies[0].Title, movies[0].ID, matchedQuery)
+		} else {
+			fmt.Printf("TMDB match: %q (ID %d)\n", movies[0].Title, movies[0].ID)
+		}
 		rec.MovieID = movies[0].ID
 		rec.ActualTitle = movies[0].Title
 		return rec, nil
@@ -261,7 +320,7 @@ func (p *Processor) promptMovieManual(extractedName string, client *tmdb.Client)
 	}
 
 	// Try TMDB with user-supplied title.
-	if movies, err := client.SearchMovie(title); err == nil && len(movies) > 0 {
+	if movies, _, err := client.SmartSearchMovie(title); err == nil && len(movies) > 0 {
 		fmt.Printf("Found: %q (ID %d) — use this? [Y/n]: ", movies[0].Title, movies[0].ID)
 		confirm, _ := p.stdin.ReadString('\n')
 		if c := strings.TrimSpace(strings.ToLower(confirm)); c == "" || c == "y" {

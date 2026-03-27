@@ -56,6 +56,7 @@ func main() {
 		tmdbKey:  *tmdbKey,
 		bdmvPath: *bdmvPath,
 		stdin:    stdin,
+		store:    store,
 	}
 
 	discNum := 1
